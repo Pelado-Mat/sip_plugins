@@ -59,8 +59,10 @@
 #define IN_PIN 12   // Digital PIN IN
 
 // Sensor Specs - Asumes a Linear Ouput Transducer
+// 5V input - Output 0.5V - 4.5V -
 #define SENSOR_MAX_PRESSURE 10342 // 150 PSI in Mbar
 #define SENSOR_MAX_VOLTAGE 4.5 // V
+#define SENSOR_MIN_PRESSURE 0.5 //V
 #define SENSOR_VCC 5 // V
 
 
@@ -96,9 +98,6 @@ bool volatile dataReady = false; // flag to trigger a Serial printout after an I
 // use volatile for variables that will be used in interrupt service routines.
 // "Volatile" instructs the compiler to get a fresh copy of the data rather than try to
 // optimise temporary registers before using, as interrupts can change the value.
-
-
-
 
 
 unsigned long lowPressureStart; // millisecs
