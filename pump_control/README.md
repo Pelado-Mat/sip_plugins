@@ -15,4 +15,9 @@ Tested Platform
 The arduino code is developed and tested with an _Arduino Nano_ and an _Aduino Uno_ (both clones). 
 In production an _Arduino Nano_ is currently in use. The pressure transducer is an automotive oil-water sensor sourced in eBay.
 
+Todo
+--------------
 
+* Add a i2C command to turn on the relay
+* Add a sensor to know if the pump is really working ( there is a pump protector that cuts power if the current is too high)
+* Think if It's desirable to sense the well water level in this plugin or in other one.
