@@ -1,6 +1,6 @@
 /*
 
-   Control Program of an hidraulic pump
+   Control Program of an hydraulic pump
    Monitors that the working pressure stays between a selected interval
    Controls a relay and reports the state and pressure via i2C
 

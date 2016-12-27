@@ -1,0 +1,6 @@
+*.pyc
+*.csv
+/python
+.idea
+/.settings
+/data/*.db
