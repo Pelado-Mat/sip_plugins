@@ -1,16 +1,10 @@
 /*
 
-   Programa de control de una bomba hidraulica
-   Monitorea la presion
+   Control Program of an hidraulic pump
+   Monitors that the working pressure stays between a selected interval
+   Controls a relay and reports the state and pressure via i2C
 
-
-   by Matias Vidal - matiasv@gmail.com - Nov 2016
-
-
-   Controla que la presion de trabajo este entre los parametros establecidos
-   En el caso que la presion salga de estos valores, se detiene el relay
-   Reporta la presion detectada via i2C
-
+   by Matias Vidal - matiasv@gmail.com - 2016
 
   Thanks to: https://github.com/MikeOchtman/Pi_Arduino_I2C
 
@@ -37,6 +31,7 @@
 
      Command 0x81: read Pressure. Integer returned, (mbar)
      Command 0x82: read Water level, Integer returned - TODO!
+     Command 0x83: read Pin Status, Integer returned -  0 Pin Off - 1 Pin On
      Command 0x0A: Write single byte - 0 PUMP_OFF - 1 RELAY_ON - overrides the pin detection - TODO!
      Command 0x0B: Write integer - Change Max Working Pressure (mbar)
      Command 0x0C: Write integer - Change Min Working Pressure (mbar)
@@ -48,27 +43,30 @@
      Command 0x94: Read Wait Time to reach pressure (Seconds)
 */
 #include <Wire.h>
+
+//### Begin  - Configurable variables ###
 #define DEBUG 0
 
 
 #define slaveAddress 9 // I2C Address
 
-#define SENSOR_PIN  A7   // Potenciometro o transducer de presion
+#define SENSOR_PIN  A7   // Pressure transducer data - Potentiometer for testing
 #define RELAY_PIN  13    // Relay
 #define BUZZ_PIN 10   // Buzzer-Speaker
 #define IN_PIN 12   // Digital PIN IN
 
 // Sensor Specs - Asumes a Linear Ouput Transducer
-// 5V input - Output 0.5V - 4.5V -
+// 5V input - Output 0.5V - 4.5V - 150 PSI Max
 #define SENSOR_MAX_PRESSURE 10342 // 150 PSI in Mbar
 #define SENSOR_MAX_VOLTAGE 4.5 // V
-#define SENSOR_MIN_PRESSURE 0.5 //V
-#define SENSOR_VCC 5 // V
+#define SENSOR_MIN_VOLTAGE 0.5 //V
 
 
 #define MAX_PRESSURE 3800 //  Presion Maxima (millibar)
 #define MIN_PRESSURE 500 // Presion Minima (millibar)
 #define MAX_WAIT_FOR_PRESSURE 20 // Tiempo Maximo para esperar que el sistema levante presion  (secs) - 20 secs  
+
+//### END  - Configurable variables ###
 
 #define rxFault 0x80
 #define txFault 0x40
@@ -81,12 +79,14 @@
 #define  ALARM_OVERPRESSURE  11 // Relay OFF
 
 
+
 struct {
   byte volatile command;
   byte volatile control; // rxFault:txFault:0:0:0:0:0:0
   int volatile pressure;
   int volatile waterLevel; //For futureUse
   byte volatile relay;
+  byte volatile pinState;
   byte volatile pumpControlStatus;
   int volatile maxPressure;
   int volatile minPressure;
@@ -101,30 +101,39 @@ bool volatile dataReady = false; // flag to trigger a Serial printout after an I
 
 
 unsigned long lowPressureStart; // millisecs
-
 int lastSensorData = 0 ;
 
 int maxSensorValue = 0;
 int minSensorValue = 0;
 
+int lastInputState = LOW;
 
-int inputState = 0;
-int lastInputState = 0;
-
-
-int getPressure(float val) {
+// Convert an analog pin reading (0-1023) to millibar
+float reading2miliBar(int reading) {
   // Formula for a pressure transducer - Linear output
-  int p = round(val * SENSOR_MAX_PRESSURE / (SENSOR_MAX_VOLTAGE * 1023 / SENSOR_VCC )) ;
-  return p;
+    float minReading = SENSOR_MIN_VOLTAGE * 1023/5;
+    float maxReading = SENSOR_MAX_VOLTAGE * 1023/5;
+    float o = (( reading - minReading) * SENSOR_MAX_PRESSURE / (maxReading - minReading) );
+    return o;
+}
+
+// Convert a pressure in millibar to an analog pin reading (0-1023)
+int miliBar2reading(float val) {
+    // Formula for a pressure transducer - Linear output
+    float minReading = SENSOR_MIN_VOLTAGE * 1023/5;
+    float maxReading = SENSOR_MAX_VOLTAGE * 1023/5;
+
+    int o = round( (val * (maxReading - minReading) / SENSOR_MAX_PRESSURE) + minReading);
+    return o;
 }
 
 void setRelay(boolean st) {
-  if (st && (commsTable.pumpControlStatus == PUMP_STARTING ) && (commsTable.pressure < maxSensorValue)) {
+  if (st && (commsTable.pressure < maxSensorValue)) {
     // start the relay
     digitalWrite(RELAY_PIN, HIGH);
     commsTable.relay = 1 ;
   } else if (not st) {
-    // stop the relay
+    // stop the relay 
     digitalWrite(RELAY_PIN, LOW);
     commsTable.relay = 0;
   }
@@ -196,7 +205,7 @@ void i2cTransmit() {
       numBytes = 1;
       break;
     case 0x81:  // send pressure
-      t = int(getPressure(commsTable.pressure));
+      t = reading2miliBar(commsTable.pressure);
       txTable[1] = (byte)(t >> 8);
       txTable[0] = (byte)(t & 0xFF);
       numBytes = 2;
@@ -206,6 +215,10 @@ void i2cTransmit() {
       txTable[1] = (byte)(t >> 8);
       txTable[0] = (byte)(t & 0xFF);
       numBytes = 2;
+      break;
+     case 0x83: // send Digital Pin state last read
+      txTable[0] = commsTable.pinState;
+      numBytes = 1;
       break;
     case 0x90: // send Relay
       txTable[0] = commsTable.relay;
@@ -272,6 +285,7 @@ byte i2cHandleRx(byte command) {
         received = Wire.read();
         integer |= (received << 8);
         commsTable.maxPressure = integer;
+        maxSensorValue = miliBar2reading(commsTable.maxPressure);
         result = 1;
       } else {
         result = 0xFF;
@@ -285,6 +299,7 @@ byte i2cHandleRx(byte command) {
         received = Wire.read();
         integer |= (received << 8);
         commsTable.minPressure = integer;
+        minSensorValue = miliBar2reading(commsTable.minPressure);
         result = 1;
       } else {
         result = 0xFF;
@@ -355,7 +370,7 @@ void printCommsTable() {
   builder += String(commsTable.control, HEX);
   Serial.println(builder);
   builder = "  pressure: ";
-  builder += getPressure(commsTable.pressure);
+  builder += reading2miliBar(commsTable.pressure);
   builder += "mBAR";
   Serial.println(builder);
   builder = "  Water Level: ";
@@ -390,8 +405,6 @@ void printCommsTable() {
 void setup() {
   lowPressureStart = 0 ;
   lastSensorData = 0 ;
-  // calculate Operating threshold
-
 
   if (DEBUG == 1) {
     Serial.begin(9600);
@@ -418,6 +431,9 @@ void setup() {
   commsTable.minPressure = MIN_PRESSURE ;
   commsTable.waitTimeForPressure = MAX_WAIT_FOR_PRESSURE;
 
+  maxSensorValue = miliBar2reading(commsTable.maxPressure);
+  minSensorValue = miliBar2reading(commsTable.minPressure);
+
   if (DEBUG == 1) {
     printCommsTable();
     printTxTable();
@@ -427,48 +443,44 @@ void setup() {
 
 
 void loop() {
-  maxSensorValue = (commsTable.maxPressure * SENSOR_MAX_VOLTAGE / SENSOR_MAX_PRESSURE) * 1023 / SENSOR_VCC ;
-  minSensorValue = (commsTable.minPressure * SENSOR_MAX_VOLTAGE / SENSOR_MAX_PRESSURE) * 1023 / SENSOR_VCC ;
   unsigned long waitTimeForPressure = (unsigned long) commsTable.waitTimeForPressure * 1000 ;
   unsigned long enlapsed = 0;
   commsTable.pressure = analogRead(SENSOR_PIN);
-  inputState = digitalRead(IN_PIN);
+  commsTable.pinState = digitalRead(IN_PIN);
 
 
-
-
-  if (inputState == LOW) {
-    commsTable.pumpControlStatus = PUMP_OFF;
+  if (commsTable.pinState == LOW) {
+    commsTable.pumpControlStatus = PUMP_OFF; // Turn OFF the pump and clear all alarms.
+    setRelay(LOW);
   } else if ( commsTable.pressure > maxSensorValue ) {
     commsTable.pumpControlStatus = ALARM_OVERPRESSURE;
-  } else if ( lastInputState == LOW )  {
-    commsTable.pumpControlStatus = PUMP_STARTING ;
-    lowPressureStart = millis();
+    setRelay(LOW);
   } else if (commsTable.pumpControlStatus == PUMP_STARTING ) {
     enlapsed = millis() - lowPressureStart;
     if ((enlapsed > waitTimeForPressure) && (commsTable.pressure < minSensorValue )) {
-      commsTable.pumpControlStatus = ALARM_UNDERPRESSURE  ;
+      commsTable.pumpControlStatus = ALARM_UNDERPRESSURE;
+      setRelay(LOW);
     } else if (commsTable.pressure > minSensorValue ) {
       commsTable.pumpControlStatus = PUMP_WORKING ;
     }
+  } else if (( lastInputState == LOW ) && (commsTable.pinState == HIGH )) {
+    commsTable.pumpControlStatus = PUMP_STARTING ;
+    lowPressureStart = millis();
+    setRelay(HIGH);
   } else if ((commsTable.pumpControlStatus == PUMP_WORKING ) && (commsTable.pressure < minSensorValue )) {
     commsTable.pumpControlStatus = PUMP_STARTING ;
     lowPressureStart = millis();
   }
 
-  switch (commsTable.pumpControlStatus) {
-    case PUMP_WORKING: setRelay(HIGH); break;
-    case PUMP_STARTING: setRelay(HIGH); break;
-    default: setRelay(LOW) ; break;
-  }
   lastSensorData = commsTable.pressure ;
-  lastInputState = inputState ;
-
+  lastInputState = commsTable.pinState ;
 
   switch (commsTable.pumpControlStatus) {
     case ALARM_UNDERPRESSURE: tone( BUZZ_PIN, 1000, 30); break;
     case ALARM_OVERPRESSURE: tone( BUZZ_PIN, 3000, 70); break;
   }
+
+  /// For DEBUG only
   if (DEBUG == 1) {
     if (dataReady) {
       printCommsTable();
