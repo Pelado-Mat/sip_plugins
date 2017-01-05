@@ -45,7 +45,7 @@
 #include <Wire.h>
 
 //### Begin  - Configurable variables ###
-#define DEBUG 0
+#define DEBUG 1
 
 
 #define slaveAddress 9 // I2C Address
